@@ -24,6 +24,8 @@ public enum QueryInfo {
       sessionId: UInt64,
       infoType: InfoType,
       fileInfoClass: FileInfoClass,
+      outputBufferLength: UInt32 = 1124,
+      additionalInformation: UInt32 = 0,
       flags: Flags = [],
       fileId: Data
     ) {
@@ -40,11 +42,11 @@ public enum QueryInfo {
       structureSize = 41
       self.infoType = infoType
       self.fileInfoClass = fileInfoClass
-      self.outputBufferLength = 1124
+      self.outputBufferLength = outputBufferLength
       self.inputBufferOffset = 0
       self.reserved = 0
       self.inputBufferLength = 0
-      self.additionalInformation = 0
+      self.additionalInformation = additionalInformation
       self.flags = flags
       self.fileId = fileId
       self.buffer = Data()

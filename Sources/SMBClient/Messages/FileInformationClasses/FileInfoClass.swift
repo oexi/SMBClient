@@ -1,6 +1,7 @@
 import Foundation
 
 public enum FileInfoClass: UInt8 {
+  case none = 0x00
   case fileAccessInformation = 0x08
   case fileAlignmentInformation = 0x11
   case fileAllInformation = 0x12
@@ -65,6 +66,7 @@ public enum FileInfoClass: UInt8 {
 extension FileInfoClass: CustomDebugStringConvertible {
   public var debugDescription: String {
     switch self {
+    case .none: return "NONE (0x00)"
     case .fileAccessInformation: return "SMB2_FILE_ACCESS_INFO (\(String(format: "0x%02x", rawValue)))"
     case .fileAlignmentInformation: return "SMB2_FILE_ALIGNMENT_INFO (\(String(format: "0x%02x", rawValue)))"
     case .fileAllInformation: return "SMB2_FILE_ALL_INFO (\(String(format: "0x%02x", rawValue)))"

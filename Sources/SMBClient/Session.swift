@@ -454,6 +454,45 @@ public class Session {
     return response
   }
 
+  /// Queries the self-relative Windows security descriptor for a file or directory.
+  public func querySecurityDescriptor(
+    path: String,
+    securityInformation: SecurityDescriptor = [.owner, .group, .dacl]
+  ) async throws -> Data {
+    let createRequest = Create.Request(
+      messageId: messageId.next(),
+      treeId: treeId,
+      sessionId: sessionId,
+      desiredAccess: [.readControl],
+      fileAttributes: [],
+      shareAccess: [.read, .write, .delete],
+      createDisposition: .open,
+      createOptions: [],
+      name: path
+    )
+    let queryInfoRequest = QueryInfo.Request(
+      headerFlags: [.relatedOperations],
+      messageId: messageId.next(),
+      treeId: treeId,
+      sessionId: sessionId,
+      infoType: .security,
+      fileInfoClass: .none,
+      outputBufferLength: 65_536,
+      additionalInformation: UInt32(securityInformation.rawValue),
+      fileId: temporaryUUID
+    )
+    let closeRequest = Close.Request(
+      headerFlags: [.relatedOperations],
+      messageId: messageId.next(),
+      treeId: treeId,
+      sessionId: sessionId,
+      fileId: temporaryUUID
+    )
+
+    let (_, response, _) = try await send(createRequest, queryInfoRequest, closeRequest)
+    return response.buffer
+  }
+
   @discardableResult
   public func createDirectory(path: String) async throws -> Create.Response {
     let response = try await create(
