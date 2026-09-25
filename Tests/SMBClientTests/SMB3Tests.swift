@@ -119,7 +119,7 @@ final class SMB3Tests: XCTestCase {
     let files = try await client.listDirectory(path: "")
     XCTAssertFalse(files.isEmpty)
 
-    let data = Data((0..<250_000).map { _ in UInt8.random(in: 0...255) })
+    let data = Crypto.randomBytes(count: 250_000)
     let name = "encrypted-share-\(UUID().uuidString).bin"
     try await client.upload(content: data, path: name)
     let downloaded = try await client.download(path: name)
@@ -212,7 +212,7 @@ final class SMB3Tests: XCTestCase {
 
       // Ranged reads across channels.
       let name = "multichannel-range-\(UUID().uuidString).bin"
-      let data = Data((0..<size).map { _ in UInt8.random(in: 0...255) })
+      let data = Crypto.randomBytes(count: size)
       let writer = FileWriter(session: session, path: name)
       try await writer.upload(data: data, progressHandler: { _ in })
       try await writer.close()
@@ -242,7 +242,7 @@ final class SMB3Tests: XCTestCase {
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: directory) }
 
-    let data = Data((0..<(Int(client.session.maxWriteSize) * 4 + 999)).map { _ in UInt8.random(in: 0...255) })
+    let data = Crypto.randomBytes(count: (Int(client.session.maxWriteSize) * 4 + 999))
     let source = directory.appendingPathComponent("source.bin")
     try data.write(to: source)
     let name = "multichannel-file-\(UUID().uuidString).bin"
@@ -254,6 +254,42 @@ final class SMB3Tests: XCTestCase {
 
     try await client.deleteFile(path: name)
     try await client.logoff()
+  }
+
+  func testMultiChannelThroughput() async throws {
+    // Timing only: the CI server runs under emulation, so no speedup is asserted.
+    let size = 64 * 1024 * 1024
+    let data = Crypto.randomBytes(count: size)
+
+    for channelCount in [1, 2, 4] {
+      let client = SMBClient(host: "localhost", port: 4445)
+      try await client.login(username: "alice", password: "alipass")
+      try await client.connectShare("Scratch")
+      if channelCount > 1 {
+        let bound = try await client.enableMultiChannel(channelCount: channelCount)
+        XCTAssertEqual(bound, channelCount - 1)
+      }
+
+      let name = "throughput-\(channelCount)-\(UUID().uuidString).bin"
+      let uploadStart = Date()
+      try await client.upload(content: data, path: name)
+      let uploadTime = Date().timeIntervalSince(uploadStart)
+
+      let downloadStart = Date()
+      let downloaded = try await client.download(path: name)
+      let downloadTime = Date().timeIntervalSince(downloadStart)
+      XCTAssertEqual(downloaded, data)
+
+      print(String(
+        format: "Multichannel throughput: %d channel(s), upload %.1f MB/s, download %.1f MB/s",
+        channelCount,
+        Double(size) / uploadTime / 1_000_000,
+        Double(size) / downloadTime / 1_000_000
+      ))
+
+      try await client.deleteFile(path: name)
+      try await client.logoff()
+    }
   }
 
   func testMultiChannelNotSupportedOnSMB2() async throws {
@@ -302,7 +338,7 @@ final class SMB3Tests: XCTestCase {
   }
 
   private func roundTrip(_ session: Session, name: String, size: Int) async throws {
-    let data = Data((0..<size).map { _ in UInt8.random(in: 0...255) })
+    let data = Crypto.randomBytes(count: size)
 
     let writer = FileWriter(session: session, path: name)
     try await writer.upload(data: data, progressHandler: { _ in })
