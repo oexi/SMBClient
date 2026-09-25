@@ -56,3 +56,10 @@ services:
          read only = no
          browseable = no
          server smb encrypt = required
+      SAMBA_VOLUME_CONFIG_scratch: |
+        [Scratch]
+         path = /shares/public
+         valid users = alice, bob
+         guest ok = no
+         read only = no
+         browseable = no

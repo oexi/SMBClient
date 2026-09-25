@@ -174,7 +174,7 @@ final class SMB3Tests: XCTestCase {
     let session = try await login(dialects: [.smb311]) {
       $0.supportedCompressionAlgorithms = [.lz77]
     }
-    try await session.treeConnect(path: "Public")
+    try await session.treeConnect(path: "Scratch")
 
     let name = "compressible-\(UUID().uuidString).txt"
     let data = Data(String(repeating: "SMB 3.1.1 compression ", count: 50_000).utf8)
@@ -195,7 +195,7 @@ final class SMB3Tests: XCTestCase {
   func testMultiChannel() async throws {
     for (dialect, requireEncryption) in [(Negotiate.Dialects.smb300, false), (.smb302, true), (.smb311, false), (.smb311, true)] {
       let session = try await login(dialects: [dialect], requireSigning: !requireEncryption, requireEncryption: requireEncryption)
-      try await session.treeConnect(path: "Public")
+      try await session.treeConnect(path: "Scratch")
       XCTAssertTrue(session.isMultiChannelSupported, "\(dialect)")
 
       try await session.bindChannel()
@@ -234,7 +234,7 @@ final class SMB3Tests: XCTestCase {
   func testMultiChannelWithSMBClient() async throws {
     let client = SMBClient(host: "localhost", port: 4445)
     try await client.login(username: "alice", password: "alipass")
-    try await client.connectShare("Public")
+    try await client.connectShare("Scratch")
     let channelCount = try await client.enableMultiChannel(channelCount: 3)
     XCTAssertEqual(channelCount, 2)
 
