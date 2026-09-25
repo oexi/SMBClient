@@ -47,3 +47,11 @@ services:
          read only = no
          browseable = yes
          force group = staff
+      SAMBA_VOLUME_CONFIG_encrypted: |
+        [Encrypted]
+         path = /shares/public
+         valid users = alice, bob
+         guest ok = no
+         read only = no
+         browseable = no
+         server smb encrypt = required

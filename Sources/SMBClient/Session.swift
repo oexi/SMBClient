@@ -8,6 +8,21 @@ public class Session {
   private var isAnonymous = false
   private var signingRequired = false
   private var signingKey: Data?
+  private var signingAlgorithm = Negotiate.SigningAlgorithm.hmacSHA256
+  private var cipher: Negotiate.Cipher?
+  private var preauthIntegrityHashValue = Data(count: 64)
+  private var encryptData = false
+  private var encryptTree = false
+
+  public private(set) var dialect: Negotiate.Dialects?
+  /// Ciphers offered for SMB 3.1.1, in order of preference.
+  public var supportedCiphers: [Negotiate.Cipher] = [.aes128GCM, .aes128CCM, .aes256GCM, .aes256CCM]
+  /// Signing algorithms offered for SMB 3.1.1, in order of preference.
+  public var supportedSigningAlgorithms: [Negotiate.SigningAlgorithm] = [.aesGMAC, .aesCMAC]
+  /// Whether messages on this session and tree are encrypted (SMB 3.x).
+  public var isEncrypted: Bool {
+    connection.messageCipher != nil && (encryptData || encryptTree)
+  }
 
   public private(set) var maxTransactSize: UInt32 = 0
   public private(set) var maxReadSize: UInt32 = 0
@@ -44,8 +59,13 @@ public class Session {
     session.sessionId = sessionId
     session.treeId = 0
 
+    session.isAnonymous = isAnonymous
     session.signingRequired = signingRequired
     session.signingKey = signingKey
+    session.signingAlgorithm = signingAlgorithm
+    session.cipher = cipher
+    session.encryptData = encryptData
+    session.dialect = dialect
 
     session.maxTransactSize = maxTransactSize
     session.maxReadSize = maxReadSize
@@ -69,15 +89,47 @@ public class Session {
   @discardableResult
   public func negotiate(
     securityMode: Negotiate.SecurityMode = [.signingEnabled],
-    dialects: [Negotiate.Dialects] = [.smb202, .smb210]
+    dialects: [Negotiate.Dialects] = [.smb202, .smb210, .smb300, .smb302, .smb311]
   ) async throws -> Negotiate.Response {
+    var negotiateContexts = [Negotiate.NegotiateContext]()
+    if dialects.contains(.smb311) {
+      negotiateContexts = [
+        Negotiate.PreauthIntegrityCapabilities(hashAlgorithms: [.sha512], salt: Crypto.randomBytes(count: 32)).context,
+        Negotiate.EncryptionCapabilities(ciphers: supportedCiphers).context,
+        Negotiate.SigningCapabilities(signingAlgorithms: supportedSigningAlgorithms).context,
+      ]
+    }
+    let supportsSMB3 = dialects.contains { $0.rawValue >= Negotiate.Dialects.smb300.rawValue }
+
     let request = Negotiate.Request(
       messageId: messageId.next(),
       securityMode: securityMode,
-      dialects: dialects
+      capabilities: supportsSMB3 ? [.encryption] : [],
+      dialects: dialects,
+      negotiateContexts: negotiateContexts
     )
 
-    let response = try await send(request)
+    let requestData = request.encoded()
+    let responseData = try await connection.send(requestData)
+    let response = Negotiate.Response(data: responseData)
+
+    dialect = Negotiate.Dialects(rawValue: response.dialectRevision)
+    switch dialect {
+    case .smb311:
+      guard response.preauthIntegrityCapabilities?.hashAlgorithms.contains(.sha512) == true else {
+        throw NegotiateError.missingPreauthIntegrity
+      }
+      preauthIntegrityHashValue = Crypto.sha512(Data(count: 64) + requestData)
+      preauthIntegrityHashValue = Crypto.sha512(preauthIntegrityHashValue + responseData)
+      signingAlgorithm = response.signingCapabilities?.signingAlgorithms.first ?? .aesCMAC
+      cipher = response.encryptionCapabilities?.ciphers.first
+    case .smb300, .smb302:
+      signingAlgorithm = .aesCMAC
+      cipher = response.capabilities.contains(.encryption) ? .aes128CCM : nil
+    case .smb202, .smb210, .none:
+      signingAlgorithm = .hmacSHA256
+      cipher = nil
+    }
 
     signingRequired = response.securityMode.contains(.signingRequired) || (securityMode.contains(.signingRequired) && response.securityMode.contains(.signingEnabled))
 
@@ -94,8 +146,15 @@ public class Session {
     password: String?,
     domain: String? = nil,
     workstation: String? = nil,
-    requireSigning: Bool = false
+    requireSigning: Bool = false,
+    requireEncryption: Bool = false
   ) async throws -> SessionSetup.Response {
+    var preauthIntegrityHashValue = self.preauthIntegrityHashValue
+    func updatePreauthIntegrityHash(_ message: Data) {
+      guard dialect == .smb311 else { return }
+      preauthIntegrityHashValue = Crypto.sha512(preauthIntegrityHashValue + message)
+    }
+
     let negotiateMessage = NTLM.NegotiateMessage(
       domainName: domain,
       workstationName: workstation
@@ -110,9 +169,14 @@ public class Session {
       previousSessionId: 0,
       securityBuffer: securityBuffer
     )
-    let response = try await send(request)
+    let requestData = request.encoded()
+    updatePreauthIntegrityHash(requestData)
+    let responseData = try await connection.send(requestData)
+    let response = SessionSetup.Response(data: responseData)
 
     if NTStatus(response.header.status) == .moreProcessingRequired {
+      updatePreauthIntegrityHash(responseData)
+
       let challengeMessage = NTLM.ChallengeMessage(data: response.buffer)
 
       let signingKey = Crypto.randomBytes(count: 16)
@@ -134,17 +198,67 @@ public class Session {
         securityBuffer: authenticateMessage.encoded()
       )
 
-      let response = try await send(request)
+      let requestData = request.encoded()
+      updatePreauthIntegrityHash(requestData)
+      let response = SessionSetup.Response(data: try await connection.send(requestData))
 
       sessionId = response.header.sessionId
 
-      isAnonymous = (username ?? "").isEmpty && (password ?? "").isEmpty
-      self.signingKey = signingKey
+      isAnonymous = ((username ?? "").isEmpty && (password ?? "").isEmpty)
+        || !response.sessionFlags.isDisjoint(with: [.guest, .nullSession])
+
+      try establishKeys(
+        sessionKey: signingKey,
+        preauthIntegrityHashValue: preauthIntegrityHashValue,
+        sessionFlags: response.sessionFlags,
+        requireEncryption: requireEncryption
+      )
 
       return response
     } else {
       sessionId = response.header.sessionId
       return response
+    }
+  }
+
+  private func establishKeys(
+    sessionKey: Data,
+    preauthIntegrityHashValue: Data,
+    sessionFlags: SessionSetup.SessionFlags,
+    requireEncryption: Bool
+  ) throws {
+    var encryptionKey: Data?
+    var decryptionKey: Data?
+
+    switch dialect {
+    case .smb311:
+      signingKey = Crypto.kdf(key: sessionKey, label: Data("SMBSigningKey\0".utf8), context: preauthIntegrityHashValue, length: 16)
+      if let cipher {
+        encryptionKey = Crypto.kdf(key: sessionKey, label: Data("SMBC2SCipherKey\0".utf8), context: preauthIntegrityHashValue, length: cipher.keyLength)
+        decryptionKey = Crypto.kdf(key: sessionKey, label: Data("SMBS2CCipherKey\0".utf8), context: preauthIntegrityHashValue, length: cipher.keyLength)
+      }
+    case .smb300, .smb302:
+      signingKey = Crypto.kdf(key: sessionKey, label: Data("SMB2AESCMAC\0".utf8), context: Data("SmbSign\0".utf8), length: 16)
+      if cipher != nil {
+        encryptionKey = Crypto.kdf(key: sessionKey, label: Data("SMB2AESCCM\0".utf8), context: Data("ServerIn \0".utf8), length: 16)
+        decryptionKey = Crypto.kdf(key: sessionKey, label: Data("SMB2AESCCM\0".utf8), context: Data("ServerOut\0".utf8), length: 16)
+      }
+    case .smb202, .smb210, .none:
+      signingKey = sessionKey
+    }
+
+    if let cipher, let encryptionKey, let decryptionKey, !isAnonymous {
+      connection.messageCipher = MessageCipher(
+        cipher: cipher,
+        sessionId: sessionId,
+        encryptionKey: encryptionKey,
+        decryptionKey: decryptionKey
+      )
+    }
+
+    encryptData = sessionFlags.contains(.encryptData) || requireEncryption
+    if encryptData && connection.messageCipher == nil {
+      throw MessageCipherError.encryptionNotSupported
     }
   }
 
@@ -212,6 +326,11 @@ public class Session {
     treeId = response.header.treeId
     connectedTree = path
 
+    encryptTree = response.shareFlags.contains(.encryptData)
+    if encryptTree && connection.messageCipher == nil {
+      throw MessageCipherError.encryptionNotSupported
+    }
+
     return response
   }
 
@@ -227,6 +346,7 @@ public class Session {
 
     treeId = 0
     connectedTree = nil
+    encryptTree = false
 
     return response
   }
@@ -731,7 +851,7 @@ public class Session {
 
   private func send<Request: Message.Request>(_ message: Request) async throws -> Request.Response {
     let packet = message.encoded()
-    let data = try await connection.send(sign(packet))
+    let data = try await connection.send(encryptIfNeeded(sign(packet)))
     let response = Request.Response(data: data)
     return response
   }
@@ -755,15 +875,15 @@ public class Session {
 
         header.nextCommand = UInt32(body.count)
 
-        packet += sign(header.encoded() + payload + alignment)
+        packet += try sign(header.encoded() + payload + alignment)
       } else {
-        packet += sign(data + alignment)
+        packet += try sign(data + alignment)
       }
 
       index += 1
     }
 
-    let responseData = try await connection.send(packet)
+    let responseData = try await connection.send(encryptIfNeeded(packet))
     let reader = ByteReader(responseData)
 
     var responses = [Data]()
@@ -806,7 +926,7 @@ public class Session {
   }
 
   private func send(_ packets: Data...) async throws -> Data {
-    return try await connection.send(
+    return try await connection.send(encryptIfNeeded(
       packets.enumerated().reduce(into: Data()) {
         let alignment = Data(count: 8 - $1.element.count % 8)
         if $1.offset < packets.count - 1 {
@@ -816,30 +936,61 @@ public class Session {
 
           header.nextCommand = UInt32(packet.count)
 
-          $0 += sign(header.encoded() + payload + alignment)
+          $0 += try sign(header.encoded() + payload + alignment)
         } else {
-          $0 += sign($1.element + alignment)
+          $0 += try sign($1.element + alignment)
         }
       }
-    )
+    ))
   }
 #endif
 
-  private func sign(_ packet: Data) -> Data {
-    if let signingKey, signingRequired, !isAnonymous {
-      var header = Header(data: packet[..<64])
-      let payload = packet[64...]
-
-      header.flags = header.flags.union(.signed)
-
-      let signature = Crypto.hmacSHA256(key: signingKey, data: header.encoded() + payload)[..<16]
-      header.signature = signature
-
-      return header.encoded() + payload
-    } else {
+  private func sign(_ packet: Data) throws -> Data {
+    guard !isEncrypted, let signingKey, !isAnonymous else {
       return packet
     }
+
+    var header = Header(data: packet[..<64])
+    let payload = packet[64...]
+
+    // SMB 3.1.1 requires TREE_CONNECT to be signed even when signing is not
+    // otherwise required (MS-SMB2 3.2.4.1.1).
+    let isTreeConnect = header.command == Header.Command.treeConnect.rawValue
+    guard signingRequired || (dialect == .smb311 && isTreeConnect) else {
+      return packet
+    }
+
+    header.flags = header.flags.union(.signed)
+    header.signature = Data(count: 16)
+    let message = header.encoded() + payload
+
+    switch (dialect, signingAlgorithm) {
+    case (.smb202, _), (.smb210, _), (.none, _), (_, .hmacSHA256):
+      header.signature = Crypto.hmacSHA256(key: signingKey, data: message)[..<16]
+    case (_, .aesCMAC):
+      header.signature = Crypto.aesCMAC(key: signingKey, data: message)
+    case (_, .aesGMAC):
+      // Nonce: MessageId followed by a 4-byte field whose bit 0 marks a
+      // server-to-client message and bit 1 a CANCEL request.
+      var nonce = Data()
+      nonce += header.messageId
+      nonce += UInt32(header.command == Header.Command.cancel.rawValue ? 0x2 : 0x0)
+      header.signature = try Crypto.aesGMAC(key: signingKey, nonce: nonce, data: message)
+    }
+
+    return header.encoded() + payload
   }
+
+  private func encryptIfNeeded(_ packet: Data) throws -> Data {
+    guard isEncrypted, let messageCipher = connection.messageCipher else {
+      return packet
+    }
+    return try messageCipher.encrypt(packet)
+  }
+}
+
+public enum NegotiateError: Error {
+  case missingPreauthIntegrity
 }
 
 private class SequenceNumber<I: UnsignedInteger & FixedWidthInteger> {

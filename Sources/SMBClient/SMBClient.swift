@@ -33,7 +33,8 @@ public class SMBClient {
     password: String?,
     domain: String? = nil,
     workstation: String? = nil,
-    requireSigning: Bool = false
+    requireSigning: Bool = false,
+    requireEncryption: Bool = false
   ) async throws -> SessionSetup.Response {
     try await session.negotiate(securityMode: [requireSigning ? .signingRequired : .signingEnabled])
     return try await session.sessionSetup(
@@ -41,7 +42,8 @@ public class SMBClient {
       password: password,
       domain: domain,
       workstation: workstation,
-      requireSigning: requireSigning
+      requireSigning: requireSigning,
+      requireEncryption: requireEncryption
     )
   }
 

@@ -11,6 +11,10 @@ public class Connection {
 
   private let semaphore = Semaphore(value: 1)
 
+  /// Set once an SMB 3.x session is established, so encrypted responses
+  /// (TRANSFORM_HEADER) can be decrypted before they are parsed.
+  var messageCipher: MessageCipher?
+
   public var state: NWConnection.State {
     connection.state
   }
@@ -166,7 +170,13 @@ public class Connection {
         self.receive(upTo: length) { (result) in
           switch result {
           case .success:
-            let data = Data(self.buffer.prefix(length))
+            let data: Data
+            do {
+              data = try self.decryptIfNeeded(Data(self.buffer.prefix(length)))
+            } catch {
+              completion(.failure(error))
+              return
+            }
             self.buffer = Data(self.buffer.suffix(from: length))
 
             let reader = ByteReader(data)
@@ -194,7 +204,13 @@ public class Connection {
                     return
                   }
 
-                  let data = transportPacket.smb2Message
+                  let data: Data
+                  do {
+                    data = try self.decryptIfNeeded(Data(transportPacket.smb2Message.prefix(length)))
+                  } catch {
+                    completion(.failure(error))
+                    return
+                  }
                   self.buffer = Data(self.buffer.suffix(from: 4 + length))
 
                   let reader = ByteReader(data)
@@ -232,6 +248,16 @@ public class Connection {
         }
       }
     }
+  }
+
+  private func decryptIfNeeded(_ data: Data) throws -> Data {
+    guard TransformHeader.isTransformMessage(data) else {
+      return data
+    }
+    guard let messageCipher else {
+      throw MessageCipherError.encryptionNotSupported
+    }
+    return try messageCipher.decrypt(data)
   }
 
   private func receive(upTo byteCount: Int, completion: @escaping (Result<(), Error>) -> Void) {

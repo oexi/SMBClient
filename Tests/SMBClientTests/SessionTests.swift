@@ -8,7 +8,11 @@ final class SessionTests: XCTestCase {
     try await session.connect()
 
     let response = try await session.negotiate()
-    XCTAssertEqual(response.dialectRevision , Negotiate.Dialects.smb210.rawValue)
+    XCTAssertEqual(response.dialectRevision , Negotiate.Dialects.smb311.rawValue)
+    XCTAssertEqual(session.dialect, .smb311)
+    XCTAssertEqual(response.preauthIntegrityCapabilities?.hashAlgorithms, [.sha512])
+    XCTAssertNotNil(response.encryptionCapabilities?.ciphers.first)
+    XCTAssertNotNil(response.signingCapabilities?.signingAlgorithms.first)
   }
 
   func testSessionSetup01() async throws {
