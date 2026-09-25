@@ -1169,8 +1169,73 @@ public class Session {
   /// Opens another connection to the server and binds it to this session as
   /// an additional channel (MS-SMB2 3.2.4.2.3). Reads and writes through
   /// FileReader and FileWriter are then spread over all channels.
+  /// The transport of this session's connection.
+  public var transport: Connection.Transport {
+    connection.transport
+  }
+
+  /// The numeric server address this session's connection reached.
+  public var remoteAddress: String? {
+    connection.remoteAddress
+  }
+
+  /// FSCTL_QUERY_NETWORK_INTERFACE_INFO (MS-SMB2 3.2.4.20.10): lists the
+  /// server's network interfaces, their addresses and RSS capability. Needs
+  /// a connected tree.
+  public func queryNetworkInterfaces() async throws -> [NetworkInterfaceInfo] {
+    let request = IOCtl.Request(
+      creditCharge: 1,
+      messageId: messageId.next(),
+      treeId: treeId,
+      sessionId: sessionId,
+      ctlCode: .queryNetworkInterfaceInfo,
+      fileId: Data(repeating: 0xFF, count: 16),
+      input: Data(),
+      output: Data()
+    )
+    // Signed even when signing is optional: the answer decides where the
+    // client connects next.
+    let responses = try await transmit(sign(request.encoded(), force: true), policy: .required)
+    return NetworkInterfaceInfo.parse(IOCtl.Response(data: responses[0]).buffer)
+  }
+
+  /// Binds channels following the Windows client defaults (see
+  /// MultiChannelPlanner), up to `maxChannels` connections in total.
+  /// Channels that cannot connect within `timeout` seconds are skipped.
+  /// Returns the number of extra channels now bound.
   @discardableResult
-  public func bindChannel(host: String? = nil, port: Int? = nil) async throws -> Session {
+  public func enableMultiChannel(maxChannels: Int = 32, timeout: TimeInterval = 5) async throws -> Int {
+    guard isMultiChannelSupported, case .tcp = transport else {
+      return 0
+    }
+
+    let interfaces: [NetworkInterfaceInfo]
+    do {
+      interfaces = try await queryNetworkInterfaces()
+    } catch is ErrorResponse {
+      // Servers without multichannel may not implement the FSCTL.
+      return channels.count
+    }
+
+    let targets = MultiChannelPlanner.targets(
+      interfaces: interfaces,
+      connectedAddress: remoteAddress,
+      host: server,
+      port: connection.port,
+      limit: maxChannels - 1 - channels.count
+    )
+    for target in targets {
+      do {
+        try await bindChannel(host: target.host, port: target.port, timeout: timeout)
+      } catch {
+        continue
+      }
+    }
+    return channels.count
+  }
+
+  @discardableResult
+  public func bindChannel(host: String? = nil, port: Int? = nil, timeout: TimeInterval? = nil) async throws -> Session {
     guard isMultiChannelSupported, let dialect, let negotiateInfo, let credentials, let signingKey else {
       throw MultiChannelError.notSupported
     }
@@ -1182,6 +1247,16 @@ public class Session {
     channel.supportedCiphers = cipher.map { [$0] } ?? supportedCiphers
     channel.supportedSigningAlgorithms = [signingAlgorithm]
     channel.supportedCompressionAlgorithms = supportedCompressionAlgorithms
+
+    // An address the server reported may be unreachable from here; give up
+    // on it instead of waiting for the TCP timeout.
+    let watchdog = timeout.map { timeout in
+      Task { [weak channel] in
+        try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+        channel?.disconnect()
+      }
+    }
+    defer { watchdog?.cancel() }
 
     do {
       try await channel.connect()
@@ -1195,6 +1270,7 @@ public class Session {
         throw MultiChannelError.negotiationMismatch
       }
       try await channel.bind(to: self, credentials: credentials, sessionSigningKey: signingKey)
+      watchdog?.cancel()
     } catch {
       channel.disconnect()
       throw error

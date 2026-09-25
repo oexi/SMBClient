@@ -56,11 +56,22 @@ public class SMBClient {
     )
   }
 
-  /// Binds extra connections to the session (SMB 3.x multichannel) so large
-  /// transfers are spread over `channelCount` connections. Returns the number
-  /// of extra channels bound; 0 when the server does not support multichannel.
+  /// Enables SMB 3.x multichannel the way the Windows client does: asks the
+  /// server for its network interfaces and opens 4 connections per
+  /// RSS-capable interface and 1 per other interface, at most `maxChannels`
+  /// in total. Returns the number of extra channels bound; 0 when the server
+  /// does not support multichannel or offers no extra connections.
   @discardableResult
-  public func enableMultiChannel(channelCount: Int = 2) async throws -> Int {
+  public func enableMultiChannel(maxChannels: Int = 32) async throws -> Int {
+    try await session.enableMultiChannel(maxChannels: maxChannels)
+  }
+
+  /// Binds extra connections to the same server address until the session
+  /// has `channelCount` connections, regardless of the server's interfaces.
+  /// Returns the number of extra channels bound; 0 when the server does not
+  /// support multichannel.
+  @discardableResult
+  public func enableMultiChannel(channelCount: Int) async throws -> Int {
     guard session.isMultiChannelSupported else {
       return 0
     }

@@ -15,6 +15,8 @@ services:
       SAMBA_GLOBAL_CONFIG_access_SPACE_based_SPACE_share_SPACE_enum: yes
       SAMBA_CONF_MAP_TO_GUEST: Never
       SAMBA_GLOBAL_CONFIG_server_SPACE_multi_SPACE_channel_SPACE_support: yes
+      # Advertise RSS like a server NIC, so clients open 4 connections to it.
+      SAMBA_GLOBAL_CONFIG_interfaces: '"eth0;capability=RSS,speed=10000000000"'
 
       GROUP_staff: 20
 

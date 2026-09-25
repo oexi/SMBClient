@@ -21,6 +21,23 @@ public class Connection {
     connection.state
   }
 
+  /// The numeric address the connection reached, once connected.
+  public var remoteAddress: String? {
+    guard case let .hostPort(host, _)? = connection.currentPath?.remoteEndpoint else {
+      return nil
+    }
+    switch host {
+    case .ipv4(let address):
+      return "\(address)"
+    case .ipv6(let address):
+      return "\(address)"
+    case .name(let name, _):
+      return name
+    @unknown default:
+      return nil
+    }
+  }
+
   public enum Transport {
     case tcp
     /// SMB over QUIC (MS-SMB2 2.1): TLS 1.3 with ALPN "smb", usually on UDP

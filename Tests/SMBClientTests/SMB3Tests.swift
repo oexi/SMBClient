@@ -256,6 +256,67 @@ final class SMB3Tests: XCTestCase {
     try await client.logoff()
   }
 
+  func testQueryNetworkInterfaces() async throws {
+    let session = try await login(dialects: [.smb311])
+    try await session.treeConnect(path: "Scratch")
+
+    let interfaces = try await session.queryNetworkInterfaces()
+    print("Server interfaces: \(interfaces)")
+    XCTAssertFalse(interfaces.isEmpty)
+    XCTAssertTrue(interfaces.contains { $0.capabilities.contains(.rss) })
+    XCTAssertTrue(interfaces.allSatisfy { !$0.address.isEmpty })
+
+    try await session.treeDisconnect()
+    try await session.logoff()
+    session.disconnect()
+  }
+
+  func testAutomaticMultiChannel() async throws {
+    // The test server advertises an RSS interface, but the client reaches it
+    // through a port forward at 127.0.0.1, which is not one of its addresses.
+    // Extra connections therefore go to the forwarded address: 4 in total
+    // for an RSS interface, capped by maxChannels.
+    for (maxChannels, expected) in [(32, 3), (4, 3), (2, 1), (1, 0)] {
+      let client = SMBClient(host: "localhost", port: 4445)
+      try await client.login(username: "alice", password: "alipass")
+      try await client.connectShare("Scratch")
+
+      let bound = try await client.enableMultiChannel(maxChannels: maxChannels)
+      XCTAssertEqual(bound, expected, "maxChannels \(maxChannels)")
+      XCTAssertEqual(client.session.channels.count, expected)
+
+      if expected > 0 {
+        let size = Int(client.session.maxWriteSize) * 5 + 777
+        let data = Crypto.randomBytes(count: size)
+        let name = "automatic-multichannel-\(UUID().uuidString).bin"
+        try await client.upload(content: data, path: name)
+        let downloaded = try await client.download(path: name)
+        XCTAssertEqual(downloaded, data)
+        try await client.deleteFile(path: name)
+      }
+
+      try await client.logoff()
+    }
+  }
+
+  func testMultiChannelSkipsUnreachableAddress() async throws {
+    let session = try await login(dialects: [.smb311])
+    try await session.treeConnect(path: "Scratch")
+
+    // TEST-NET-1 (RFC 5737) never answers.
+    let start = Date()
+    do {
+      try await session.bindChannel(host: "192.0.2.1", port: 445, timeout: 1)
+      XCTFail("Binding to an unreachable address should fail")
+    } catch {}
+    XCTAssertLessThan(Date().timeIntervalSince(start), 10)
+    XCTAssertTrue(session.channels.isEmpty)
+
+    try await session.treeDisconnect()
+    try await session.logoff()
+    session.disconnect()
+  }
+
   func testMultiChannelThroughput() async throws {
     // Timing only: the CI server runs under emulation, so no speedup is asserted.
     let size = 64 * 1024 * 1024
