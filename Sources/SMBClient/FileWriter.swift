@@ -19,6 +19,21 @@ public class FileWriter {
     let fileProxy = try await fileProxy()
 
     var offset: UInt64 = 0
+
+    if !session.channels.isEmpty {
+      let chunkSize = Int(session.maxWriteSize)
+      let roundSize = chunkSize * session.lanes.count
+      while offset < data.count {
+        let roundEnd = min(Int(offset) + roundSize, data.count)
+        let chunks = stride(from: Int(offset), to: roundEnd, by: chunkSize).map {
+          Data(data[(data.startIndex + $0)..<(data.startIndex + min($0 + chunkSize, roundEnd))])
+        }
+        try await session.writeInParallel(fileId: fileProxy.id, offset: offset, chunks: chunks)
+        offset = UInt64(roundEnd)
+        progressHandler(Double(offset) / Double(data.count))
+      }
+      return
+    }
     while offset < data.count {
       let buffer = data[offset..<min(offset + UInt64(session.maxWriteSize), UInt64(data.count))]
 
@@ -40,6 +55,24 @@ public class FileWriter {
   public func upload(fileHandle: FileHandle, progressHandler: (_ progress: Double) -> Void) async throws {
     let fileSize = try fileHandle.fileSize()
     let fileProxy = try await fileProxy()
+
+    if !session.channels.isEmpty {
+      while true {
+        let offset = UInt64(try fileHandle.offsetInFile())
+        var chunks = [Data]()
+        for _ in session.lanes {
+          let data = fileHandle.readData(ofLength: Int(session.maxWriteSize))
+          if data.isEmpty { break }
+          chunks.append(data)
+        }
+        if chunks.isEmpty { break }
+
+        try await session.writeInParallel(fileId: fileProxy.id, offset: offset, chunks: chunks)
+        progressHandler(Double(offset) / Double(fileSize))
+      }
+      progressHandler(1.0)
+      return
+    }
 
     while true {
       let offset = UInt64(try fileHandle.offsetInFile())

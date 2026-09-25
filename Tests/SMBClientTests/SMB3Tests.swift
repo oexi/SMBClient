@@ -140,6 +140,143 @@ final class SMB3Tests: XCTestCase {
     session.disconnect()
   }
 
+  func testValidateNegotiate() async throws {
+    for dialect in [Negotiate.Dialects.smb300, .smb302] {
+      // A successful TREE_CONNECT on 3.0/3.0.2 includes FSCTL_VALIDATE_NEGOTIATE_INFO.
+      let session = try await login(dialects: [dialect])
+      try await session.treeConnect(path: "Alice Share")
+      try await session.treeDisconnect()
+
+      // A NEGOTIATE that was tampered with is detected.
+      let info = try XCTUnwrap(session.negotiateInfo)
+      session.negotiateInfo = NegotiateInfo(
+        clientCapabilities: info.clientCapabilities,
+        clientSecurityMode: info.clientSecurityMode,
+        dialects: info.dialects,
+        serverCapabilities: info.serverCapabilities,
+        serverGuid: info.serverGuid,
+        serverSecurityMode: info.serverSecurityMode,
+        dialectRevision: Negotiate.Dialects.smb202.rawValue
+      )
+      do {
+        try await session.treeConnect(path: "Alice Share")
+        XCTFail("Validation should fail for \(dialect)")
+      } catch NegotiateError.validationFailed {
+      }
+      session.disconnect()
+    }
+  }
+
+  func testCompressionNegotiation() async throws {
+    // Samba does not implement SMB2 compression, so this checks that offering
+    // the compression context does not break negotiation, and exercises
+    // compression if the server does support it.
+    let session = try await login(dialects: [.smb311]) {
+      $0.supportedCompressionAlgorithms = [.lz77]
+    }
+    try await session.treeConnect(path: "Alice Share")
+
+    let name = "compressible-\(UUID().uuidString).txt"
+    let data = Data(String(repeating: "SMB 3.1.1 compression ", count: 50_000).utf8)
+    let writer = FileWriter(session: session, path: name)
+    try await writer.upload(data: data, progressHandler: { _ in })
+    try await writer.close()
+    let reader = FileReader(session: session, path: name)
+    let downloaded = try await reader.download(progressHandler: { _ in })
+    XCTAssertEqual(downloaded, data)
+    try await reader.close()
+    try await session.deleteFile(path: name)
+
+    try await session.treeDisconnect()
+    try await session.logoff()
+    session.disconnect()
+  }
+
+  func testMultiChannel() async throws {
+    for (dialect, requireEncryption) in [(Negotiate.Dialects.smb300, false), (.smb302, true), (.smb311, false), (.smb311, true)] {
+      let session = try await login(dialects: [dialect], requireSigning: !requireEncryption, requireEncryption: requireEncryption)
+      try await session.treeConnect(path: "Alice Share")
+      XCTAssertTrue(session.isMultiChannelSupported, "\(dialect)")
+
+      try await session.bindChannel()
+      try await session.bindChannel()
+      XCTAssertEqual(session.channels.count, 2)
+      for channel in session.channels {
+        XCTAssertEqual(channel.dialect, dialect)
+        XCTAssertEqual(channel.isEncrypted, requireEncryption)
+      }
+
+      // 2.5 chunks per channel, so the last round is partial.
+      let size = Int(session.maxWriteSize) * 7 + 12_345
+      try await roundTrip(session, name: "multichannel-\(dialect)-\(requireEncryption).bin", size: size)
+
+      // Ranged reads across channels.
+      let name = "multichannel-range-\(UUID().uuidString).bin"
+      let data = Data((0..<size).map { _ in UInt8.random(in: 0...255) })
+      let writer = FileWriter(session: session, path: name)
+      try await writer.upload(data: data, progressHandler: { _ in })
+      try await writer.close()
+      let reader = FileReader(session: session, path: name)
+      let offset = UInt64(session.maxReadSize) / 2
+      let range = try await reader.read(offset: offset, length: session.maxReadSize * 3)
+      XCTAssertEqual(range, data[Int(offset)..<(Int(offset) + Int(session.maxReadSize) * 3)])
+      let tail = try await reader.read(offset: UInt64(size - 100), length: session.maxReadSize * 2)
+      XCTAssertEqual(tail, data.suffix(100))
+      try await reader.close()
+      try await session.deleteFile(path: name)
+
+      try await session.treeDisconnect()
+      try await session.logoff()
+      session.disconnect()
+    }
+  }
+
+  func testMultiChannelWithSMBClient() async throws {
+    let client = SMBClient(host: "localhost", port: 4445)
+    try await client.login(username: "alice", password: "alipass")
+    try await client.connectShare("Alice Share")
+    let channelCount = try await client.enableMultiChannel(channelCount: 3)
+    XCTAssertEqual(channelCount, 2)
+
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let data = Data((0..<(Int(client.session.maxWriteSize) * 4 + 999)).map { _ in UInt8.random(in: 0...255) })
+    let source = directory.appendingPathComponent("source.bin")
+    try data.write(to: source)
+    let name = "multichannel-file-\(UUID().uuidString).bin"
+    try await client.upload(localPath: source, remotePath: name)
+
+    let destination = directory.appendingPathComponent("destination.bin")
+    try await client.download(path: name, localPath: destination)
+    XCTAssertEqual(try Data(contentsOf: destination), data)
+
+    try await client.deleteFile(path: name)
+    try await client.logoff()
+  }
+
+  func testMultiChannelNotSupportedOnSMB2() async throws {
+    let session = try await login(dialects: [.smb210])
+    XCTAssertFalse(session.isMultiChannelSupported)
+    do {
+      try await session.bindChannel()
+      XCTFail("SMB 2.1 cannot bind channels")
+    } catch MultiChannelError.notSupported {
+    }
+    session.disconnect()
+  }
+
+  func testQUICTransportConfiguration() {
+    let connection = Connection(host: "localhost", port: 443, transport: .quic)
+    XCTAssertEqual(connection.port, 443)
+    guard case .quic = connection.transport else {
+      return XCTFail("Expected QUIC transport")
+    }
+    let session = Session(host: "localhost", port: 443, transport: .quic)
+    XCTAssertEqual(session.server, "localhost")
+  }
+
   // MARK: - Helpers
 
   private func login(

@@ -14,32 +14,53 @@ public class Connection {
   /// Set once an SMB 3.x session is established, so encrypted responses
   /// (TRANSFORM_HEADER) can be decrypted before they are parsed.
   var messageCipher: MessageCipher?
+  /// Set when SMB 3.1.1 compression was negotiated.
+  var messageCompressor: MessageCompressor?
 
   public var state: NWConnection.State {
     connection.state
   }
 
-  public init(host: String) {
-    self.host = host
-    
-    let endpoint = NWEndpoint.hostPort(
-      host: NWEndpoint.Host(host),
-      port: NWEndpoint.Port(integerLiteral: 445)
-    )
-    connection = NWConnection(to: endpoint, using: .tcp)
-    queue = DispatchQueue(label: "com.kishikawakatsumi.smbclient.connection.\(host):445", qos: .userInitiated)
-    onDisconnected = { _ in }
+  public enum Transport {
+    case tcp
+    /// SMB over QUIC (MS-SMB2 2.1): TLS 1.3 with ALPN "smb", usually on UDP
+    /// port 443. Requires macOS 12, iOS 15 or later.
+    case quic
   }
 
-  public init(host: String, port: Int) {
+  public let transport: Transport
+  public let port: Int
+
+  public convenience init(host: String) {
+    self.init(host: host, port: 445)
+  }
+
+  public init(host: String, port: Int, transport: Transport = .tcp) {
     self.host = host
+    self.port = port
+    self.transport = transport
+
     let endpoint = NWEndpoint.hostPort(
       host: NWEndpoint.Host(host),
       port: NWEndpoint.Port(rawValue: UInt16(port))!
     )
-    connection = NWConnection(to: endpoint, using: .tcp)
+    connection = NWConnection(to: endpoint, using: Connection.parameters(for: transport))
     queue = DispatchQueue(label: "com.kishikawakatsumi.smbclient.connection.\(host):\(port)", qos: .userInitiated)
     onDisconnected = { _ in }
+  }
+
+  private static func parameters(for transport: Transport) -> NWParameters {
+    switch transport {
+    case .tcp:
+      return .tcp
+    case .quic:
+      guard #available(macOS 12.0, iOS 15.0, *) else {
+        preconditionFailure("SMB over QUIC requires macOS 12, iOS 15 or later")
+      }
+      let options = NWProtocolQUIC.Options(alpn: ["smb"])
+      options.direction = .bidirectional
+      return NWParameters(quic: options)
+    }
   }
 
   public func connect() async throws {
@@ -90,7 +111,32 @@ public class Connection {
     connection.cancel()
   }
 
+  struct Response {
+    /// Each response message exactly as the server sent it (after removing
+    /// encryption and compression), so its signature can be verified.
+    var messages: [Data]
+    /// Whether every frame of the response arrived encrypted.
+    var encrypted: Bool
+
+    func check() throws {
+      if let failure = messages.first(where: { !Connection.isSuccess($0) }) {
+        throw ErrorResponse(data: failure)
+      }
+    }
+  }
+
+  /// Sends a message (or a compound chain) and returns the response bytes,
+  /// concatenated in order.
   public func send(_ data: Data) async throws -> Data {
+    let response = try await exchange(data)
+    try response.check()
+    return response.messages.reduce(Data(), +)
+  }
+
+  /// Sends a message (or a compound chain) and returns each response message
+  /// separately. Interim STATUS_PENDING responses are replaced by the final
+  /// response with the same MessageId. Error statuses are not thrown here.
+  func exchange(_ data: Data) async throws -> Response {
     await semaphore.wait()
     defer { Task { await semaphore.signal() } }
 
@@ -109,184 +155,134 @@ public class Connection {
     }
 
     let transportPacket = DirectTCPPacket(smb2Message: data)
-    let content = transportPacket.encoded()
+    try await sendRaw(transportPacket.encoded())
 
-    return try await withCheckedThrowingContinuation { (continuation) in
-      connection.send(content: content, completion: .contentProcessed() { (error) in
+    var (messages, encrypted) = try await receiveMessages()
+    while let index = messages.firstIndex(where: { Connection.isInterim($0) }) {
+      let messageId = Header(data: messages[index]).messageId
+      var replaced = false
+      while !replaced {
+        let (next, nextEncrypted) = try await receiveMessages()
+        for message in next where Header(data: message).messageId == messageId {
+          messages[index] = message
+          encrypted = encrypted && nextEncrypted
+          replaced = true
+        }
+      }
+    }
+
+    return Response(messages: messages, encrypted: encrypted)
+  }
+
+  private func sendRaw(_ content: Data) async throws {
+    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+      connection.send(content: content, completion: .contentProcessed { error in
         if let error {
           continuation.resume(throwing: error)
-          return
-        }
-
-        self.receive() { (result) in
-          switch result {
-          case .success(let data):
-            continuation.resume(returning: data)
-          case .failure(let error):
-            continuation.resume(throwing: error)
-          }
+        } else {
+          continuation.resume()
         }
       })
     }
   }
 
-  private func receive(completion: @escaping (Result<Data, Error>) -> Void) {
-    let minimumIncompleteLength = 1
-    let maximumLength = 65536
-
-    connection.receive(
-      minimumIncompleteLength: minimumIncompleteLength,
-      maximumLength: maximumLength)
-    { (content, contentContext, isComplete, error) in
-      if let error = error {
-        completion(.failure(error))
-        return
+  /// Receives one transport frame and splits it into its SMB2 messages.
+  /// Unsolicited oplock/lease break notifications are skipped.
+  private func receiveMessages() async throws -> (messages: [Data], encrypted: Bool) {
+    while true {
+      let frame = try await receiveFrame()
+      let encrypted = TransformHeader.isTransformMessage(frame)
+      let messages = Connection.split(try decode(frame))
+      guard !messages.isEmpty else {
+        throw ConnectionError.unknown
       }
+      if messages.count == 1, Header(data: messages[0]).messageId == UInt64.max {
+        continue
+      }
+      return (messages, encrypted)
+    }
+  }
 
-      guard let content else {
-        if isComplete {
-          completion(.failure(ConnectionError.disconnected))
+  private func receiveFrame() async throws -> Data {
+    try await fill(upTo: 4)
+    let length = Int(DirectTCPPacket(response: Data(buffer.prefix(4))).protocolLength)
+    try await fill(upTo: 4 + length)
+
+    let frame = Data(buffer[(buffer.startIndex + 4)..<(buffer.startIndex + 4 + length)])
+    buffer = Data(buffer.dropFirst(4 + length))
+    return frame
+  }
+
+  private func fill(upTo byteCount: Int) async throws {
+    while buffer.count < byteCount {
+      buffer.append(try await receiveChunk())
+    }
+  }
+
+  private func receiveChunk() async throws -> Data {
+    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
+      connection.receive(minimumIncompleteLength: 1, maximumLength: 1 << 20) { (content, _, isComplete, error) in
+        if let error {
+          continuation.resume(throwing: error)
+        } else if let content, !content.isEmpty {
+          continuation.resume(returning: content)
+        } else if isComplete {
+          continuation.resume(throwing: ConnectionError.disconnected)
         } else {
-          self.receive(completion: completion)
-        }
-        return
-      }
-
-      self.buffer.append(Data(content))
-
-      self.receive(upTo: 4) { (headerResult) in
-        switch headerResult {
-        case .failure(let error):
-          completion(.failure(error))
-          return
-        case .success:
-          break
-        }
-
-        let transportPacket = DirectTCPPacket(response: self.buffer)
-        let length = Int(transportPacket.protocolLength)
-        self.buffer = Data(transportPacket.smb2Message)
-
-        self.receive(upTo: length) { (result) in
-          switch result {
-          case .success:
-            let data: Data
-            do {
-              data = try self.decryptIfNeeded(Data(self.buffer.prefix(length)))
-            } catch {
-              completion(.failure(error))
-              return
-            }
-            self.buffer = Data(self.buffer.suffix(from: length))
-
-            let reader = ByteReader(data)
-            var offset = 0
-
-            var header: Header
-            var response = Data()
-            repeat {
-              header = reader.read()
-
-              switch NTStatus(header.status) {
-              case
-                .success,
-                .moreProcessingRequired,
-                .noMoreFiles,
-                .endOfFile:
-                response += data
-              case .pending:
-                if self.buffer.count >= 4 {
-                  let transportPacket = DirectTCPPacket(response: self.buffer)
-                  let length = Int(transportPacket.protocolLength)
-
-                  if self.buffer.count < 4 + length {
-                    self.receive(completion: completion)
-                    return
-                  }
-
-                  let data: Data
-                  do {
-                    data = try self.decryptIfNeeded(Data(transportPacket.smb2Message.prefix(length)))
-                  } catch {
-                    completion(.failure(error))
-                    return
-                  }
-                  self.buffer = Data(self.buffer.suffix(from: 4 + length))
-
-                  let reader = ByteReader(data)
-                  let header: Header = reader.read()
-
-                  switch NTStatus(header.status) {
-                  case
-                    .success,
-                    .moreProcessingRequired,
-                    .noMoreFiles,
-                    .endOfFile:
-                    response += data
-                    break
-                  default:
-                    completion(.failure(ErrorResponse(data: data)))
-                    return
-                  }
-                } else {
-                  self.receive(completion: completion)
-                  return
-                }
-              default:
-                completion(.failure(ErrorResponse(data: Data(data[offset...]))))
-                return
-              }
-
-              offset += Int(header.nextCommand)
-              reader.seek(to: offset)
-            } while header.nextCommand > 0
-
-            completion(.success(response))
-          case .failure(let error):
-            completion(.failure(error))
-          }
+          continuation.resume(returning: Data())
         }
       }
     }
   }
 
-  private func decryptIfNeeded(_ data: Data) throws -> Data {
-    guard TransformHeader.isTransformMessage(data) else {
-      return data
+  /// Removes encryption and compression transforms (MS-SMB2 3.2.5.1.1.1).
+  private func decode(_ frame: Data) throws -> Data {
+    var data = frame
+    if TransformHeader.isTransformMessage(data) {
+      guard let messageCipher else {
+        throw MessageCipherError.encryptionNotSupported
+      }
+      data = try messageCipher.decrypt(data)
     }
-    guard let messageCipher else {
-      throw MessageCipherError.encryptionNotSupported
+    if CompressionTransformHeader.isCompressedMessage(data) {
+      guard let messageCompressor else {
+        throw CompressionError.malformedMessage
+      }
+      data = try messageCompressor.decompress(data)
     }
-    return try messageCipher.decrypt(data)
+    return data
   }
 
-  private func receive(upTo byteCount: Int, completion: @escaping (Result<(), Error>) -> Void) {
-    let minimumIncompleteLength = 1
-    let maximumLength = 65536
-
-    if self.buffer.count < byteCount {
-      self.connection.receive(minimumIncompleteLength: minimumIncompleteLength, maximumLength: maximumLength) { (data, _, isComplete, error) in
-        if let error = error {
-          completion(.failure(error))
-          return
-        }
-
-        guard let data else {
-          if isComplete {
-            completion(.failure(ConnectionError.disconnected))
-          } else {
-            self.receive(upTo: byteCount, completion: completion)
-          }
-          return
-        }
-
-        self.buffer.append(data)
-        self.receive(upTo: byteCount, completion: completion)
+  /// Splits a compound response into its messages. Each message except the
+  /// last spans NextCommand bytes, including padding, which is what its
+  /// signature covers.
+  static func split(_ frame: Data) -> [Data] {
+    var messages = [Data]()
+    var offset = frame.startIndex
+    while frame.endIndex - offset >= 64 {
+      let header = Header(data: Data(frame[offset..<(offset + 64)]))
+      let next = Int(header.nextCommand)
+      if next == 0 || offset + next > frame.endIndex {
+        messages.append(Data(frame[offset...]))
+        break
       }
-      return
+      messages.append(Data(frame[offset..<(offset + next)]))
+      offset += next
     }
+    return messages
+  }
 
-    completion(.success(()))
+  private static func isInterim(_ message: Data) -> Bool {
+    NTStatus(Header(data: message).status) == .pending
+  }
+
+  static func isSuccess(_ message: Data) -> Bool {
+    switch NTStatus(Header(data: message).status) {
+    case .success, .moreProcessingRequired, .noMoreFiles, .endOfFile:
+      return true
+    default:
+      return false
+    }
   }
 }
 

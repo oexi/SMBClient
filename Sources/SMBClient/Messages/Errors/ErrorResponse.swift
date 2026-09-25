@@ -5,8 +5,11 @@ public struct ErrorResponse: Error {
   public let structureSize: UInt16
   public let errorContextCount: UInt8
   public let reserved: UInt8
+  /// The raw response message, used to verify its signature.
+  let message: Data
 
   public init(data: Data) {
+    message = data
     let reader = ByteReader(data)
 
     header = reader.read()

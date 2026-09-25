@@ -28,6 +28,16 @@ public class FileReader {
 
     var buffer = Data()
 
+    if !session.channels.isEmpty && length > session.maxReadSize {
+      let available = fileProxy.size > offset ? fileProxy.size - offset : 0
+      try await session.readInParallel(
+        fileId: fileProxy.id,
+        offset: offset,
+        length: min(UInt64(length), available)
+      ) { buffer.append($0) }
+      return buffer
+    }
+
     var response: Read.Response
     repeat {
       response = try await session.read(
@@ -47,6 +57,15 @@ public class FileReader {
 
     var offset: UInt64 = 0
     var buffer = Data()
+
+    if !session.channels.isEmpty {
+      try await session.readInParallel(fileId: fileProxy.id, offset: 0, length: fileProxy.size) { data in
+        buffer.append(data)
+        progressHandler(Double(buffer.count) / Double(fileProxy.size))
+      }
+      progressHandler(1.0)
+      return buffer
+    }
 
     var response: Read.Response
     repeat {
@@ -94,6 +113,17 @@ public class FileReader {
     let fileProxy = try await fileProxy()
 
     var offset: UInt64 = 0
+
+    if !session.channels.isEmpty {
+      try await session.readInParallel(fileId: fileProxy.id, offset: 0, length: fileProxy.size) { data in
+        fileHandle.seekToEndOfFile()
+        fileHandle.write(data)
+        offset += UInt64(data.count)
+        progressHandler(Double(offset) / Double(fileProxy.size))
+      }
+      progressHandler(1.0)
+      return
+    }
     var response: Read.Response
     repeat {
       response = try await session.read(

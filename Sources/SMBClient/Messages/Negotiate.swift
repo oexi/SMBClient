@@ -21,6 +21,7 @@ public enum Negotiate {
       messageId: UInt64,
       securityMode: SecurityMode,
       capabilities: Capabilities = [],
+      clientGuid: UUID = UUID(),
       dialects: [Dialects],
       negotiateContexts: [NegotiateContext] = []
     ) {
@@ -39,7 +40,7 @@ public enum Negotiate {
       self.securityMode = securityMode
       reserved = 0
       self.capabilities = capabilities
-      clientGuid = UUID()
+      self.clientGuid = clientGuid
       self.dialects = dialects
 
       if negotiateContexts.isEmpty || !dialects.contains(.smb311) {
@@ -156,6 +157,10 @@ public enum Negotiate {
 
     public var encryptionCapabilities: EncryptionCapabilities? {
       negotiateContexts.lazy.compactMap { EncryptionCapabilities(context: $0) }.first
+    }
+
+    public var compressionCapabilities: CompressionCapabilities? {
+      negotiateContexts.lazy.compactMap { CompressionCapabilities(context: $0) }.first
     }
 
     public var signingCapabilities: SigningCapabilities? {
@@ -324,6 +329,50 @@ public enum Negotiate {
         data += cipher.rawValue
       }
       return NegotiateContext(contextType: NegotiateContextType.encryptionCapabilities.rawValue, data: data)
+    }
+  }
+
+  public enum CompressionAlgorithm: UInt16 {
+    case noCompression = 0x0000
+    case lznt1 = 0x0001
+    case lz77 = 0x0002
+    case lz77Huffman = 0x0003
+    case patternV1 = 0x0004
+    case lz4 = 0x0005
+  }
+
+  public struct CompressionCapabilities {
+    public let flags: UInt32
+    public let compressionAlgorithms: [CompressionAlgorithm]
+
+    public init(compressionAlgorithms: [CompressionAlgorithm]) {
+      flags = 0 // SMB2_COMPRESSION_CAPABILITIES_FLAG_NONE: unchained only
+      self.compressionAlgorithms = compressionAlgorithms
+    }
+
+    init?(context: NegotiateContext) {
+      guard context.contextType == NegotiateContextType.compressionCapabilities.rawValue, context.data.count >= 8 else {
+        return nil
+      }
+      let reader = ByteReader(context.data)
+      let count: UInt16 = reader.read()
+      let _: UInt16 = reader.read()
+      flags = reader.read()
+      guard context.data.count >= 8 + Int(count) * 2 else {
+        return nil
+      }
+      compressionAlgorithms = (0..<count).compactMap { _ in CompressionAlgorithm(rawValue: reader.read()) }
+    }
+
+    public var context: NegotiateContext {
+      var data = Data()
+      data += UInt16(compressionAlgorithms.count)
+      data += UInt16(0)
+      data += flags
+      for algorithm in compressionAlgorithms {
+        data += algorithm.rawValue
+      }
+      return NegotiateContext(contextType: NegotiateContextType.compressionCapabilities.rawValue, data: data)
     }
   }
 

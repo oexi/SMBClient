@@ -19,6 +19,7 @@ public enum SessionSetup {
       headerFlags: Header.Flags = [],
       messageId: UInt64,
       sessionId: UInt64,
+      flags: Flags = [],
       securityMode: SecurityMode,
       capabilities: Capabilities,
       previousSessionId: UInt64,
@@ -34,7 +35,7 @@ public enum SessionSetup {
       )
 
       self.structureSize = 25
-      self.flags = []
+      self.flags = flags
       self.securityMode = securityMode
       self.capabilities = capabilities
       self.channel = 0

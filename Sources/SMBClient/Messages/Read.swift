@@ -26,7 +26,8 @@ public enum Read {
       sessionId: UInt64,
       fileId: Data,
       offset: UInt64,
-      length: UInt32
+      length: UInt32,
+      flags: UInt8 = 0
     ) {
       header = Header(
         creditCharge: creditCharge,
@@ -40,7 +41,7 @@ public enum Read {
 
       structureSize = 49
       padding = 0
-      flags = 0
+      self.flags = flags
       self.length = length
       self.offset = offset
       self.fileId = fileId

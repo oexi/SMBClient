@@ -27,6 +27,15 @@ public class SMBClient {
     onDisconnected = { _ in }
   }
 
+  /// Creates a client over the given transport. Use `.quic` for SMB over
+  /// QUIC, which servers usually offer on port 443.
+  public init(host: String, port: Int, transport: Connection.Transport) {
+    self.host = host
+    self.port = port
+    session = Session(host: host, port: port, transport: transport)
+    onDisconnected = { _ in }
+  }
+
   @discardableResult
   public func login(
     username: String?,
@@ -45,6 +54,20 @@ public class SMBClient {
       requireSigning: requireSigning,
       requireEncryption: requireEncryption
     )
+  }
+
+  /// Binds extra connections to the session (SMB 3.x multichannel) so large
+  /// transfers are spread over `channelCount` connections. Returns the number
+  /// of extra channels bound; 0 when the server does not support multichannel.
+  @discardableResult
+  public func enableMultiChannel(channelCount: Int = 2) async throws -> Int {
+    guard session.isMultiChannelSupported else {
+      return 0
+    }
+    while session.channels.count + 1 < channelCount {
+      try await session.bindChannel()
+    }
+    return session.channels.count
   }
 
   @discardableResult
