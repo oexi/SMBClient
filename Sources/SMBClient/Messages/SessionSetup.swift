@@ -19,6 +19,7 @@ public enum SessionSetup {
       headerFlags: Header.Flags = [],
       messageId: UInt64,
       sessionId: UInt64,
+      creditRequest: UInt16 = 0,
       flags: Flags = [],
       securityMode: SecurityMode,
       capabilities: Capabilities,
@@ -28,7 +29,7 @@ public enum SessionSetup {
       header = Header(
         creditCharge: 1,
         command: .sessionSetup,
-        creditRequest: 0,
+        creditRequest: creditRequest,
         flags: headerFlags,
         messageId: messageId,
         sessionId: sessionId

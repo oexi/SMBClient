@@ -270,6 +270,7 @@ public class Session {
       try verify(
         responseData,
         encrypted: false,
+        expectEncrypted: false,
         policy: dialect == .smb311 ? .required : .ifSigned
       )
 
@@ -1259,9 +1260,13 @@ public class Session {
       signingKey: sessionKey
     )
 
+    // A new connection starts with a single credit. Ask for enough that the
+    // first large READ/WRITE (up to 128 credits each) fits; Samba drops the
+    // connection when a request is charged more credits than granted.
     let authenticateRequest = SessionSetup.Request(
       messageId: messageId.next(),
       sessionId: sessionId,
+      creditRequest: 256,
       flags: [.binding],
       securityMode: [.signingEnabled],
       capabilities: [],
