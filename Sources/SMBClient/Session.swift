@@ -325,7 +325,7 @@ public class Session {
   @discardableResult
   public func logoff() async throws -> Logoff.Response {
     let request = Logoff.Request(
-      messageId: messageId.next(),
+      messageId: 0,
       sessionId: sessionId
     )
 
@@ -380,7 +380,7 @@ public class Session {
   @discardableResult
   public func treeConnect(path: String) async throws -> TreeConnect.Response {
     let request = TreeConnect.Request(
-      messageId: messageId.next(),
+      messageId: 0,
       sessionId: sessionId,
       path: #"\\\#(server)\\#(path)"#
     )
@@ -405,7 +405,7 @@ public class Session {
   @discardableResult
   public func treeDisconnect() async throws -> TreeDisconnect.Response {
     let request = TreeDisconnect.Request(
-      messageId: messageId.next(),
+      messageId: 0,
       treeId: treeId,
       sessionId: sessionId
     )
@@ -428,7 +428,7 @@ public class Session {
     name: String
   ) async throws -> Create.Response {
     let request = Create.Request(
-      messageId: messageId.next(),
+      messageId: 0,
       treeId: treeId,
       sessionId: sessionId,
       desiredAccess: desiredAccess,
@@ -458,7 +458,7 @@ public class Session {
 
     let request = Read.Request(
       creditCharge: creditSize,
-      messageId: messageId.next(count: UInt64(creditSize)),
+      messageId: 0,
       treeId: tree.treeId,
       sessionId: sessionId,
       fileId: fileId,
@@ -468,7 +468,7 @@ public class Session {
     )
 
     let encrypt = shouldEncrypt(tree: tree)
-    let responses = try await transmit(sign(request.encoded(), encrypt: encrypt), encrypt: encrypt)
+    let responses = try await transmit(request.encoded(), encrypt: encrypt)
     return Read.Response(data: responses[0])
   }
 
@@ -490,7 +490,7 @@ public class Session {
 
     let request = Write.Request(
       creditCharge: creditSize,
-      messageId: messageId.next(count: UInt64(creditSize)),
+      messageId: 0,
       treeId: tree.treeId,
       sessionId: sessionId,
       fileId: fileId,
@@ -499,14 +499,14 @@ public class Session {
     )
 
     let encrypt = shouldEncrypt(tree: tree)
-    let responses = try await transmit(sign(request.encoded(), encrypt: encrypt), encrypt: encrypt)
+    let responses = try await transmit(request.encoded(), encrypt: encrypt)
     return Write.Response(data: responses[0])
   }
 
   @discardableResult
   public func close(fileId: Data) async throws -> Close.Response {
     let request = Close.Request(
-      messageId: messageId.next(),
+      messageId: 0,
       treeId: treeId,
       sessionId: sessionId,
       fileId: fileId
@@ -517,7 +517,7 @@ public class Session {
 
   public func queryDirectory(path: String, pattern: String) async throws -> [FileDirectoryInformation] {
     let createRequest = Create.Request(
-      messageId: messageId.next(),
+      messageId: 0,
       treeId: treeId,
       sessionId: sessionId,
       desiredAccess: [.readData, .readAttributes, .synchronize],
@@ -535,7 +535,7 @@ public class Session {
     let queryDirectoryRequest = QueryDirectory.Request(
       creditCharge: creditSize,
       headerFlags: [.relatedOperations],
-      messageId: messageId.next(count: UInt64(creditSize)),
+      messageId: 0,
       treeId: treeId,
       sessionId: sessionId,
       fileInformationClass: fileInformationClass,
@@ -554,7 +554,7 @@ public class Session {
 
         let queryDirectoryRequest = QueryDirectory.Request(
           creditCharge: creditSize,
-          messageId: messageId.next(count: UInt64(creditSize)),
+          messageId: 0,
           treeId: treeId,
           sessionId: sessionId,
           fileInformationClass: fileInformationClass,
@@ -580,7 +580,7 @@ public class Session {
 
   public func fileStat(path: String) async throws -> Create.Response {
     let createRequest = Create.Request(
-      messageId: messageId.next(),
+      messageId: 0,
       treeId: treeId,
       sessionId: sessionId,
       desiredAccess: [.readData, .readAttributes, .synchronize],
@@ -592,7 +592,7 @@ public class Session {
     )
     let closeRequest = Close.Request(
       headerFlags: [.relatedOperations],
-      messageId: messageId.next(),
+      messageId: 0,
       treeId: treeId,
       sessionId: sessionId,
       fileId: temporaryUUID
@@ -628,7 +628,7 @@ public class Session {
 
   public func queryInfo(path: String, infoType: InfoType = .file, fileInfoClass: FileInfoClass = .fileAllInformation) async throws -> QueryInfo.Response {
     let createRequest = Create.Request(
-      messageId: messageId.next(),
+      messageId: 0,
       treeId: treeId,
       sessionId: sessionId,
       desiredAccess: [.readAttributes],
@@ -640,7 +640,7 @@ public class Session {
     )
     let queryInfoRequest = QueryInfo.Request(
       headerFlags: [.relatedOperations],
-      messageId: messageId.next(),
+      messageId: 0,
       treeId: treeId,
       sessionId: sessionId,
       infoType: infoType,
@@ -649,7 +649,7 @@ public class Session {
     )
     let closeRequest = Close.Request(
       headerFlags: [.relatedOperations],
-      messageId: messageId.next(),
+      messageId: 0,
       treeId: treeId,
       sessionId: sessionId,
       fileId: temporaryUUID
@@ -665,7 +665,7 @@ public class Session {
     securityInformation: SecurityDescriptor = [.owner, .group, .dacl]
   ) async throws -> Data {
     let createRequest = Create.Request(
-      messageId: messageId.next(),
+      messageId: 0,
       treeId: treeId,
       sessionId: sessionId,
       desiredAccess: [.readControl],
@@ -677,7 +677,7 @@ public class Session {
     )
     let queryInfoRequest = QueryInfo.Request(
       headerFlags: [.relatedOperations],
-      messageId: messageId.next(),
+      messageId: 0,
       treeId: treeId,
       sessionId: sessionId,
       infoType: .security,
@@ -688,7 +688,7 @@ public class Session {
     )
     let closeRequest = Close.Request(
       headerFlags: [.relatedOperations],
-      messageId: messageId.next(),
+      messageId: 0,
       treeId: treeId,
       sessionId: sessionId,
       fileId: temporaryUUID
@@ -728,7 +728,7 @@ public class Session {
     }
 
     let createRequest = Create.Request(
-      messageId: messageId.next(),
+      messageId: 0,
       treeId: treeId,
       sessionId: sessionId,
       desiredAccess: [.readAttributes, .delete, .synchronize],
@@ -740,7 +740,7 @@ public class Session {
     )
     let setInfoRequest = SetInfo.Request(
       headerFlags: [.relatedOperations],
-      messageId: messageId.next(),
+      messageId: 0,
       treeId: treeId,
       sessionId: sessionId,
       fileId: temporaryUUID,
@@ -749,7 +749,7 @@ public class Session {
     )
     let closeRequest = Close.Request(
       headerFlags: [.relatedOperations],
-      messageId: messageId.next(),
+      messageId: 0,
       treeId: treeId,
       sessionId: sessionId,
       fileId: temporaryUUID
@@ -760,7 +760,7 @@ public class Session {
 
   public func deleteFile(path: String) async throws {
     let createRequest = Create.Request(
-      messageId: messageId.next(),
+      messageId: 0,
       treeId: treeId,
       sessionId: sessionId,
       desiredAccess: [.readAttributes, .delete, .synchronize],
@@ -772,7 +772,7 @@ public class Session {
     )
     let setInfoRequest = SetInfo.Request(
       headerFlags: [.relatedOperations],
-      messageId: messageId.next(),
+      messageId: 0,
       treeId: treeId,
       sessionId: sessionId,
       fileId: temporaryUUID,
@@ -781,7 +781,7 @@ public class Session {
     )
     let closeRequest = Close.Request(
       headerFlags: [.relatedOperations],
-      messageId: messageId.next(),
+      messageId: 0,
       treeId: treeId,
       sessionId: sessionId,
       fileId: temporaryUUID
@@ -792,7 +792,7 @@ public class Session {
 
   public func move(from: String, to: String) async throws {
     let createRequest = Create.Request(
-      messageId: messageId.next(),
+      messageId: 0,
       treeId: treeId,
       sessionId: sessionId,
       desiredAccess: [.readAttributes, .delete, .synchronize],
@@ -804,7 +804,7 @@ public class Session {
     )
     let setInfoRequest = SetInfo.Request(
       headerFlags: [.relatedOperations],
-      messageId: messageId.next(),
+      messageId: 0,
       treeId: treeId,
       sessionId: sessionId,
       fileId: temporaryUUID,
@@ -813,7 +813,7 @@ public class Session {
     )
     let closeRequest = Close.Request(
       headerFlags: [.relatedOperations],
-      messageId: messageId.next(),
+      messageId: 0,
       treeId: treeId,
       sessionId: sessionId,
       fileId: temporaryUUID
@@ -825,7 +825,7 @@ public class Session {
   @discardableResult
   public func setInfo(path: String, _ info: FileInformationClass) async throws -> SetInfo.Response {
     let createRequest = Create.Request(
-      messageId: messageId.next(),
+      messageId: 0,
       treeId: treeId,
       sessionId: sessionId,
       desiredAccess: [.readAttributes, .writeAttributes, .synchronize],
@@ -837,7 +837,7 @@ public class Session {
     )
     let setInfoRequest = SetInfo.Request(
       headerFlags: [.relatedOperations],
-      messageId: messageId.next(),
+      messageId: 0,
       treeId: treeId,
       sessionId: sessionId,
       fileId: temporaryUUID,
@@ -846,7 +846,7 @@ public class Session {
     )
     let closeRequest = Close.Request(
       headerFlags: [.relatedOperations],
-      messageId: messageId.next(),
+      messageId: 0,
       treeId: treeId,
       sessionId: sessionId,
       fileId: temporaryUUID
@@ -859,7 +859,7 @@ public class Session {
   @discardableResult
   public func flush(fileId: Data) async throws -> Flush.Response {
     let request = Flush.Request(
-      messageId: messageId.next(),
+      messageId: 0,
       treeId: treeId,
       sessionId: sessionId,
       fileId: fileId
@@ -871,7 +871,7 @@ public class Session {
   @discardableResult
   public func echo() async throws -> Echo.Response {
     let request = Echo.Request(
-      messageId: messageId.next(),
+      messageId: 0,
       sessionId: sessionId
     )
 
@@ -898,7 +898,7 @@ public class Session {
     let creditSize = creditSize(size: maxReadSize)
     let request = IOCtl.Request(
       creditCharge: creditSize,
-      messageId: messageId.next(count: UInt64(creditSize)),
+      messageId: 0,
       treeId: treeId,
       sessionId: sessionId,
       ctlCode: .pipeTransceive,
@@ -922,7 +922,7 @@ public class Session {
     let creditSize = creditSize(size: maxReadSize)
     let request = IOCtl.Request(
       creditCharge: creditSize,
-      messageId: messageId.next(count: UInt64(creditSize)),
+      messageId: 0,
       treeId: treeId,
       sessionId: sessionId,
       ctlCode: .pipeTransceive,
@@ -935,38 +935,18 @@ public class Session {
   }
 
   private func send<Request: Message.Request>(_ message: Request) async throws -> Request.Response {
-    let responses = try await transmit(sign(message.encoded()))
+    let responses = try await transmit(message.encoded())
     return Request.Response(data: responses[0])
   }
 
 #if compiler(>=5.9)
   private func send<each Request: Message.Request>(_ messages: repeat each Request) async throws -> (repeat (each Request).Response) {
-    var count = 0
-    for _ in repeat each messages {
-      count += 1
-    }
-
-    var packet = Data()
-    var index = 0
+    var encoded = [Data]()
     for message in repeat each messages {
-      let data = message.encoded()
-      let alignment = Data(count: 8 - data.count % 8)
-      if index < count - 1 {
-        let body = data + alignment
-        var header = Header(data: body[..<64])
-        let payload = data[64...]
-
-        header.nextCommand = UInt32(body.count)
-
-        packet += try sign(header.encoded() + payload + alignment)
-      } else {
-        packet += try sign(data + alignment)
-      }
-
-      index += 1
+      encoded.append(message.encoded())
     }
 
-    let responses = try await transmit(packet)
+    let responses = try await transmit(Self.compound(encoded))
 
     var iterator = 0
     func respond<R: Message.Request>(requestType: R.Type) -> R.Response {
@@ -979,45 +959,71 @@ public class Session {
   }
 #else
   private func send<R1: Message.Request, R2: Message.Request>(_ m1: R1, _ m2: R2) async throws -> (R1.Response, R2.Response) {
-    let responses = try await send(m1.encoded(), m2.encoded())
+    let responses = try await transmit(Self.compound([m1.encoded(), m2.encoded()]))
     return (R1.Response(data: responses[0]), R2.Response(data: responses[1]))
   }
 
   private func send<R1: Message.Request, R2: Message.Request, R3: Message.Request>(_ m1: R1, _ m2: R2, _ m3: R3) async throws -> (R1.Response, R2.Response, R3.Response) {
-    let responses = try await send(m1.encoded(), m2.encoded(), m3.encoded())
+    let responses = try await transmit(Self.compound([m1.encoded(), m2.encoded(), m3.encoded()]))
     return (R1.Response(data: responses[0]), R2.Response(data: responses[1]), R3.Response(data: responses[2]))
-  }
-
-  private func send(_ packets: Data...) async throws -> [Data] {
-    return try await transmit(
-      packets.enumerated().reduce(into: Data()) {
-        let alignment = Data(count: 8 - $1.element.count % 8)
-        if $1.offset < packets.count - 1 {
-          let packet = $1.element + alignment
-          var header = Header(data: packet[..<64])
-          let payload = $1.element[64...]
-
-          header.nextCommand = UInt32(packet.count)
-
-          $0 += try sign(header.encoded() + payload + alignment)
-        } else {
-          $0 += try sign($1.element + alignment)
-        }
-      }
-    )
   }
 #endif
 
-  /// Compresses and encrypts an already signed packet as needed, sends it,
-  /// then verifies each response before checking its status.
-  private func transmit(_ packet: Data, policy: SignaturePolicy = .standard, encrypt: Bool? = nil) async throws -> [Data] {
+  /// Chains unsigned requests into one compound packet: every message is
+  /// padded to 8 bytes and all but the last point to the next one.
+  static func compound(_ messages: [Data]) -> Data {
+    var packet = Data()
+    for (index, data) in messages.enumerated() {
+      let alignment = Data(count: 8 - data.count % 8)
+      guard index < messages.count - 1 else {
+        packet += data + alignment
+        break
+      }
+      let body = data + alignment
+      var header = Header(data: body[..<64])
+      header.nextCommand = UInt32(body.count)
+      packet += header.encoded() + data[64...] + alignment
+    }
+    return packet
+  }
+
+  /// Numbers, signs, compresses and encrypts `packet` (one request or an
+  /// unsigned compound chain), sends it, then verifies each response before
+  /// checking its status.
+  ///
+  /// Message IDs are taken while the connection is held for this exchange,
+  /// so requests made concurrently on one connection go out in the order of
+  /// their IDs. IDs used to be taken when a request was built; concurrent
+  /// requests then went out of order, an ID could land outside the server's
+  /// sequence window (MS-SMB2 3.3.5.2.3), and the server dropped the
+  /// connection.
+  private func transmit(
+    _ packet: Data,
+    forceSigning: Bool = false,
+    policy: SignaturePolicy = .standard,
+    encrypt: Bool? = nil
+  ) async throws -> [Data] {
     let encrypt = encrypt ?? isEncrypted
-    let response = try await connection.exchange(encryptIfNeeded(compressIfNeeded(packet), encrypt: encrypt))
+    let response = try await connection.exchange {
+      var signed = Data()
+      for message in Connection.split(packet) {
+        signed += try sign(numbered(message), force: forceSigning, encrypt: encrypt)
+      }
+      return try encryptIfNeeded(compressIfNeeded(signed), encrypt: encrypt)
+    }
     for message in response.messages {
       try verify(message, encrypted: response.encrypted, expectEncrypted: encrypt, policy: policy)
     }
     try response.check()
     return response.messages
+  }
+
+  /// Gives a request the next message IDs of this connection, one for each
+  /// credit it charges (MS-SMB2 3.2.4.1.2).
+  func numbered(_ message: Data) -> Data {
+    var header = Header(data: Data(message.prefix(64)))
+    header.messageId = messageId.next(count: UInt64(max(1, header.creditCharge)))
+    return header.encoded() + message.dropFirst(64)
   }
 
   func sign(_ packet: Data, force: Bool = false, encrypt: Bool? = nil) throws -> Data {
@@ -1185,7 +1191,7 @@ public class Session {
   public func queryNetworkInterfaces() async throws -> [NetworkInterfaceInfo] {
     let request = IOCtl.Request(
       creditCharge: 1,
-      messageId: messageId.next(),
+      messageId: 0,
       treeId: treeId,
       sessionId: sessionId,
       ctlCode: .queryNetworkInterfaceInfo,
@@ -1195,7 +1201,7 @@ public class Session {
     )
     // Signed even when signing is optional: the answer decides where the
     // client connects next.
-    let responses = try await transmit(sign(request.encoded(), force: true), policy: .required)
+    let responses = try await transmit(request.encoded(), forceSigning: true, policy: .required)
     return NetworkInterfaceInfo.parse(IOCtl.Response(data: responses[0]).buffer)
   }
 
@@ -1545,10 +1551,16 @@ public enum NegotiateError: Error {
   case validationFailed
 }
 
-private class SequenceNumber<I: UnsignedInteger & FixedWidthInteger> {
-  var current: I = 0
+/// Shared by the sessions of one connection. Requests take IDs while they
+/// hold the connection; the lock also covers the setup requests that take
+/// theirs before.
+private final class SequenceNumber<I: UnsignedInteger & FixedWidthInteger> {
+  private let lock = NSLock()
+  private var current: I = 0
 
   func next(count: I = 1) -> I {
+    lock.lock()
+    defer { lock.unlock() }
     let next = current
     current &+= count
     return next

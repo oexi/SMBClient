@@ -9,7 +9,7 @@ public struct Header {
   public let creditRequestResponse: UInt16
   public internal(set) var flags: Flags
   public internal(set) var nextCommand: UInt32
-  public let messageId: UInt64
+  public internal(set) var messageId: UInt64
   public let reserved: UInt32
   public let treeId: UInt32
   public let sessionId: UInt64

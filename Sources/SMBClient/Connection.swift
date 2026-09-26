@@ -154,6 +154,13 @@ public class Connection {
   /// separately. Interim STATUS_PENDING responses are replaced by the final
   /// response with the same MessageId. Error statuses are not thrown here.
   func exchange(_ data: Data) async throws -> Response {
+    try await exchange { data }
+  }
+
+  /// Like `exchange(_:)`, but builds the packet only once this exchange holds
+  /// the connection, so anything `prepare` assigns (message IDs) follows
+  /// the order in which packets are actually sent.
+  func exchange(_ prepare: () throws -> Data) async throws -> Response {
     await semaphore.wait()
     defer { Task { await semaphore.signal() } }
 
@@ -171,7 +178,7 @@ public class Connection {
       throw ConnectionError.unknown
     }
 
-    let transportPacket = DirectTCPPacket(smb2Message: data)
+    let transportPacket = DirectTCPPacket(smb2Message: try prepare())
     try await sendRaw(transportPacket.encoded())
 
     var (messages, encrypted) = try await receiveMessages()
